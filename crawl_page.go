@@ -5,52 +5,55 @@ import (
 	"net/url"
 )
 
-func crawlPage(rawBaseURL, rawCurrentURL string, pages map[string]int) {
-	base, err := url.Parse(rawBaseURL)
-	if err != nil {
-		fmt.Printf("Error parsing base url: %s: %v\n", rawBaseURL, err)
+func (cfg *config) crawlPage(rawCurrentURL string) {
+	cfg.concurrencyControl <- struct{}{}
+	defer func() {
+		<-cfg.concurrencyControl
+		cfg.wg.Done()
+	}()
+
+	if cfg.pagesLen() >= cfg.maxPages {
 		return
 	}
 
-	current, err := url.Parse(rawCurrentURL)
+	currentURL, err := url.Parse(rawCurrentURL)
 	if err != nil {
-		fmt.Printf("Error parsing current URL %s: %v\n", rawCurrentURL, err)
+		fmt.Printf("Error - crawlPage: couldn't parse URL '%s': %v\n", rawCurrentURL, err)
 		return
 	}
 
-	if base.Host != current.Host {
+	// skip other websites
+	if currentURL.Hostname() != cfg.baseURL.Hostname() {
 		return
 	}
 
 	normalizedURL, err := normalizeURL(rawCurrentURL)
 	if err != nil {
-		fmt.Printf("Error normalizing URL %s: %v\n", rawCurrentURL, err)
+		fmt.Printf("Error - normalizedURL: %v", err)
 		return
 	}
 
-	if count, ok := pages[normalizedURL]; ok {
-		pages[normalizedURL] = count + 1
+	isFirst := cfg.addPageVisit(normalizedURL)
+	if !isFirst {
 		return
 	}
 
-	pages[normalizedURL] = 1
+	fmt.Printf("crawling %s\n", rawCurrentURL)
 
-	fmt.Printf("crawling: %s\n", rawCurrentURL)
-
-	html, err := getHTML(rawCurrentURL)
+	htmlBody, err := getHTML(rawCurrentURL)
 	if err != nil {
-		fmt.Printf("Error fetching HTML from %s: %v\n", rawCurrentURL, err)
+		fmt.Printf("Error - getHTML: %v", err)
 		return
 	}
 
-	urls, err := getURLsFromHTML(html, rawBaseURL)
+	nextURLs, err := getURLsFromHTML(htmlBody, cfg.baseURL)
 	if err != nil {
-		fmt.Printf("Error extracting URLs from %s: %v\n", rawCurrentURL, err)
+		fmt.Printf("Error - getURLsFromHTML: %v", err)
 		return
 	}
 
-	for _, u := range urls {
-		crawlPage(rawBaseURL, u, pages)
+	for _, nextURL := range nextURLs {
+		cfg.wg.Add(1)
+		go cfg.crawlPage(nextURL)
 	}
-
 }
