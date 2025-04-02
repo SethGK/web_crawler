@@ -1,139 +1,43 @@
 package main
 
 import (
-	"reflect"
+	"net/url"
 	"strings"
-	"testing"
+
+	"golang.org/x/net/html"
 )
 
-func TestGetURLsFromHTML(t *testing.T) {
-	cases := []struct {
-		name          string
-		inputURL      string
-		inputBody     string
-		expected      []string
-		errorContains string
-	}{
-		{
-			name:     "absolute URL",
-			inputURL: "https://blog.boot.dev",
-			inputBody: `
-<html>
-	<body>
-		<a href="https://blog.boot.dev">
-			<span>Boot.dev</span>
-		</a>
-	</body>
-</html>
-`,
-			expected: []string{"https://blog.boot.dev"},
-		},
-		{
-			name:     "relative URL",
-			inputURL: "https://blog.boot.dev",
-			inputBody: `
-<html>
-	<body>
-		<a href="/path/one">
-			<span>Boot.dev</span>
-		</a>
-	</body>
-</html>
-`,
-			expected: []string{"https://blog.boot.dev/path/one"},
-		},
-		{
-			name:     "absolute and relative URLs",
-			inputURL: "https://blog.boot.dev",
-			inputBody: `
-<html>
-	<body>
-		<a href="/path/one">
-			<span>Boot.dev</span>
-		</a>
-		<a href="https://other.com/path/one">
-			<span>Boot.dev</span>
-		</a>
-	</body>
-</html>
-`,
-			expected: []string{"https://blog.boot.dev/path/one", "https://other.com/path/one"},
-		},
-		{
-			name:     "no href",
-			inputURL: "https://blog.boot.dev",
-			inputBody: `
-<html>
-	<body>
-		<a>
-			<span>Boot.dev></span>
-		</a>
-	</body>
-</html>
-`,
-			expected: nil,
-		},
-		{
-			name:     "bad HTML",
-			inputURL: "https://blog.boot.dev",
-			inputBody: `
-<html body>
-	<a href="path/one">
-		<span>Boot.dev></span>
-	</a>
-</html body>
-`,
-			expected: []string{"https://blog.boot.dev/path/one"},
-		},
-		{
-			name:     "invalid href URL",
-			inputURL: "https://blog.boot.dev",
-			inputBody: `
-<html>
-	<body>
-		<a href=":\\invalidURL">
-			<span>Boot.dev</span>
-		</a>
-	</body>
-</html>
-`,
-			expected: nil,
-		},
-		{
-			name:     "handle invalid base URL",
-			inputURL: `:\\invalidBaseURL`,
-			inputBody: `
-<html>
-	<body>
-		<a href="/path">
-			<span>Boot.dev</span>
-		</a>
-	</body>
-</html>
-`,
-			expected:      nil,
-			errorContains: "couldn't parse base URL",
-		},
+func getURLsFromHTML(htmlBody, rawBaseURL string) ([]string, error) {
+	var urls []string
+
+	baseURL, err := url.Parse(rawBaseURL)
+	if err != nil {
+		return nil, err
 	}
 
-	for i, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			actual, err := getURLsFromHTML(tc.inputBody, tc.inputURL)
-			if err != nil && !strings.Contains(err.Error(), tc.errorContains) {
-				t.Errorf("Test %v - '%s' FAIL: unexpected error: %v", i, tc.name, err)
-				return
-			} else if err != nil && tc.errorContains == "" {
-				t.Errorf("Test %v - '%s' FAIL: unexpected error: %v", i, tc.name, err)
-				return
-			} else if err == nil && tc.errorContains != "" {
-				t.Errorf("Test %v - '%s' FAIL: expected error containing '%v', got none.", i, tc.name, tc.errorContains)
-				return
-			}
-
-			if !reflect.DeepEqual(actual, tc.expected) {
-				t.Errorf("Test %v - '%s' FAIL: expected URLs %v, got URLs %v", i, tc.name, tc.expected, actual)
-				return
-			}
-		})
+	doc, err := html.Parse(strings.NewReader(htmlBody))
+	if err != nil {
+		return nil, err
 	}
+
+	var extractLinks func(*html.Node)
+	extractLinks = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "a" {
+			for _, attr := range n.Attr {
+				if attr.Key == "href" {
+					parsedURL, err := url.Parse(attr.Val)
+					if err != nil {
+						absoluteURL := baseURL.ResolveReference(parsedURL).String()
+						urls = append(urls, absoluteURL)
+					}
+					break
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = n.NextSibling {
+			extractLinks(c)
+		}
+	}
+	extractLinks(doc)
+	return urls, nil
 }
